@@ -210,14 +210,18 @@ class HoneypotDetector:
                 return
             
             # Look for suspicious function selectors in bytecode
+            # Note: DELEGATECALL is common in proxies and not always malicious
             suspicious_patterns = {
                 "selfdestruct": "ff",  # SELFDESTRUCT opcode
-                "delegatecall": "f4",  # DELEGATECALL opcode
             }
             
             for pattern_name, opcode in suspicious_patterns.items():
                 if opcode in code_hex:
                     self.add_finding(f"Contains {pattern_name.upper()} opcode - potential backdoor", "HIGH")
+            
+            # DELEGATECALL is common, only flag as INFO
+            if "f4" in code_hex:
+                self.add_finding("Contains DELEGATECALL opcode (common in proxies)", "INFO")
             
         except Exception as e:
             self.add_finding(f"Error analyzing bytecode: {str(e)}", "MEDIUM")
@@ -308,6 +312,35 @@ class HoneypotDetector:
                 }
             ]
             
+            # Pair ABI for getting reserves
+            pair_abi = [
+                {
+                    "constant": True,
+                    "inputs": [],
+                    "name": "getReserves",
+                    "outputs": [
+                        {"internalType": "uint112", "name": "_reserve0", "type": "uint112"},
+                        {"internalType": "uint112", "name": "_reserve1", "type": "uint112"},
+                        {"internalType": "uint32", "name": "_blockTimestampLast", "type": "uint32"}
+                    ],
+                    "type": "function"
+                },
+                {
+                    "constant": True,
+                    "inputs": [],
+                    "name": "token0",
+                    "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+                    "type": "function"
+                },
+                {
+                    "constant": True,
+                    "inputs": [],
+                    "name": "token1",
+                    "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+                    "type": "function"
+                }
+            ]
+            
             factory = self.w3.eth.contract(address=Web3.to_checksum_address(factory_address), abi=factory_abi)
             pair_address = factory.functions.getPair(
                 self.contract_address, 
@@ -319,13 +352,28 @@ class HoneypotDetector:
             else:
                 self.add_finding(f"Liquidity pair exists: {pair_address}", "INFO")
                 
-                # Check liquidity amount
-                bnb_balance = self.w3.eth.get_balance(pair_address)
-                bnb_amount = self.w3.from_wei(bnb_balance, 'ether')
+                # Get actual reserves from the pair contract
+                pair_contract = self.w3.eth.contract(address=Web3.to_checksum_address(pair_address), abi=pair_abi)
+                reserves = pair_contract.functions.getReserves().call()
+                token0 = pair_contract.functions.token0().call()
+                token1 = pair_contract.functions.token1().call()
+                
+                # Determine which reserve is WBNB
+                if token0.lower() == WBNB.lower():
+                    bnb_reserve = reserves[0]
+                else:
+                    bnb_reserve = reserves[1]
+                
+                bnb_amount = self.w3.from_wei(bnb_reserve, 'ether')
                 self.add_finding(f"Pair BNB liquidity: {bnb_amount:.4f} BNB", "INFO")
                 
+                # Adjusted thresholds
                 if bnb_amount < 0.1:
-                    self.add_finding("Very low liquidity - high risk!", "HIGH")
+                    self.add_finding("Extremely low liquidity (<0.1 BNB) - very high risk!", "CRITICAL")
+                elif bnb_amount < 1:
+                    self.add_finding("Very low liquidity (<1 BNB) - high risk!", "HIGH")
+                elif bnb_amount < 5:
+                    self.add_finding("Low liquidity (<5 BNB) - proceed with caution", "MEDIUM")
         
         except Exception as e:
             self.add_finding(f"Error checking liquidity: {str(e)}", "MEDIUM")
@@ -351,12 +399,12 @@ class HoneypotDetector:
                 if source_code and source_code != '':
                     self.add_finding(f"Contract verified on BSCScan: {contract_name}", "INFO")
                 else:
-                    self.add_finding("Contract NOT verified on BSCScan - high risk!", "HIGH")
+                    self.add_finding("Contract NOT verified on BSCScan - risky", "MEDIUM")
             else:
-                self.add_finding("Contract NOT verified on BSCScan - high risk!", "HIGH")
+                self.add_finding("Contract NOT verified on BSCScan - risky", "MEDIUM")
         
         except Exception as e:
-            self.add_finding(f"Could not verify source code: {str(e)}", "MEDIUM")
+            self.add_finding(f"Could not verify source code: {str(e)}", "INFO")
     
     def check_max_transaction_limit(self):
         """Check for maximum transaction amount limits"""
@@ -525,15 +573,19 @@ class HoneypotDetector:
         self.risk_score = min(self.risk_score, 10)
         
         # Determine final verdict
-        if self.is_honeypot or self.risk_score >= 4:
+        # Only flag as honeypot if explicitly detected OR very high risk score
+        if self.is_honeypot or self.risk_score >= 8:
             verdict = "🚨 HONEYPOT DETECTED"
             verdict_color = "CRITICAL"
-        elif self.risk_score >= 2:
+        elif self.risk_score >= 5:
             verdict = "⚠️  HIGH RISK - Proceed with extreme caution"
             verdict_color = "HIGH"
-        elif self.risk_score >= 1:
+        elif self.risk_score >= 3:
             verdict = "⚡ MEDIUM RISK - Be cautious"
             verdict_color = "MEDIUM"
+        elif self.risk_score >= 1:
+            verdict = "⚠️  LOW-MEDIUM RISK - Do your research"
+            verdict_color = "LOW"
         else:
             verdict = "✅ APPEARS SAFE - Low risk detected"
             verdict_color = "INFO"
