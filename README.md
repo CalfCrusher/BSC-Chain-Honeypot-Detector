@@ -37,6 +37,22 @@ source env/bin/activate  # macOS/Linux
 pip install -r requirements.txt
 ```
 
+### Environment variables (.env)
+
+This project supports a local `.env` file for configuration. A sample is provided as `.env.example`.
+
+- Copy the example file and edit your keys:
+  ```bash
+  cp .env.example .env
+  ```
+- Set at least one explorer API key:
+  - `ETHERSCAN_API` (preferred, v2 API that also works for BSC via Etherscan multi-chain)
+  - or `ETHERSCAN_API_KEY` (legacy name)
+  - optional fallback: `BSCSCAN_API_KEY` (legacy v1 endpoint)
+- Optional: `BNB_PRICE_USD` to skip live price fetches, and `HONEYPOT_ADDRS` for `quick_test.py`.
+
+Note: `.env` is already ignored by git.
+
 ## Usage
 
 Run the script with a single command-line argument:
