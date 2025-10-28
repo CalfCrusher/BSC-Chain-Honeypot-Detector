@@ -7,11 +7,16 @@ A Python script that analyzes BEP-20 tokens on Binance Smart Chain (BSC) to dete
 The detector performs the following checks:
 
 1. **Basic Token Information** - Retrieves name, symbol, decimals, and total supply
-2. **Ownership Analysis** - Checks if ownership is renounced and owner's token holdings
-3. **Bytecode Analysis** - Scans for suspicious opcodes (selfdestruct, delegatecall)
-4. **Liquidity Check** - Verifies PancakeSwap liquidity pool existence and depth
-5. **Transfer Restrictions** - Tests for transfer limitations or blocks
-6. **Buy/Sell Simulation** - Simulates trades to detect selling restrictions and calculate slippage
+2. **Source Code Verification** - Checks if contract is verified on BSCScan
+3. **Ownership Analysis** - Checks if ownership is renounced and owner's token holdings
+4. **Bytecode Analysis** - Scans for suspicious opcodes (selfdestruct, delegatecall)
+5. **Max Transaction Limits** - Detects unreasonably low transaction limits
+6. **Pause/Lock Mechanisms** - Checks if trading is paused or disabled
+7. **Liquidity Check** - Verifies PancakeSwap liquidity pool existence and depth
+8. **Transfer Restrictions** - Tests for transfer limitations or blocks
+9. **Tax/Fee Analysis** - Estimates buy and sell taxes from slippage analysis
+10. **Gas Estimation** - Compares gas costs to detect unusual behavior
+11. **Buy/Sell Simulation** - Simulates trades to detect selling restrictions and calculate slippage
 
 ## Installation
 
@@ -55,29 +60,62 @@ The script will:
 
 ## Detection Techniques
 
-### 1. Ownership Check
+### 1. Basic Token Info
+- Retrieves token name, symbol, decimals, and total supply
+- Validates contract is properly deployed
+
+### 2. Source Code Verification
+- Checks if contract is verified on BSCScan
+- Unverified contracts are flagged as high risk
+- Verified contracts allow for code review
+
+### 3. Ownership Check
 - Verifies if contract ownership is renounced
 - Checks owner's percentage of total supply
 - High owner concentration is flagged as risky
 
-### 2. Bytecode Analysis
+### 4. Bytecode Analysis
 - Scans for dangerous opcodes that could enable backdoors
 - Detects selfdestruct and delegatecall patterns
+- Identifies potential hidden admin functions
 
-### 3. Liquidity Analysis
+### 5. Max Transaction Limits
+- Checks for `maxTxAmount` restrictions
+- Flags extremely low limits (<0.1% of supply) as honeypot indicators
+- Low limits can prevent selling meaningful amounts
+
+### 6. Pause/Lock Mechanisms
+- Detects if contract is paused
+- Checks if trading is disabled
+- Identifies tokens that can be frozen by owner
+
+### 7. Liquidity Analysis
 - Checks for liquidity pair on PancakeSwap
-- Evaluates liquidity depth
-- Low liquidity indicates higher risk
+- Evaluates liquidity depth in BNB
+- Low liquidity indicates higher risk and manipulation potential
 
-### 4. Buy/Sell Simulation
+### 8. Transfer Restrictions
+- Tests if transfer function is callable
+- Identifies paused or blocked transfers
+- Detects hidden transfer restrictions
+
+### 9. Tax/Fee Analysis
+- Estimates combined buy and sell taxes
+- Calculates effective tax from round-trip simulation
+- Flags tokens with extremely high taxes (>50%)
+- High taxes can make it unprofitable to sell
+
+### 10. Gas Estimation
+- Estimates gas costs for transfers
+- Normal transfers should cost 50k-100k gas
+- Extremely high gas (>500k) indicates complex/suspicious logic
+
+### 11. Buy/Sell Simulation
 - Simulates buying tokens with BNB
 - Simulates selling tokens back to BNB
 - Calculates round-trip slippage
-- Detects if selling is blocked or restricted
-
-### 5. Transfer Restrictions
-- Tests if transfer function is callable
-- Identifies paused or blocked transfers
+- Detects if selling is blocked or heavily taxed
+- **Most critical test** - proves if you can actually sell
 
 ## Requirements
 

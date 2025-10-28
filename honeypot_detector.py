@@ -21,6 +21,9 @@ PANCAKESWAP_ROUTER = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
 # WBNB address
 WBNB = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 
+# BSCScan API endpoint
+BSCSCAN_API = "https://api.bscscan.com/api"
+
 # Standard BEP-20 ABI (minimal)
 BEP20_ABI = [
     {
@@ -84,6 +87,34 @@ BEP20_ABI = [
         "inputs": [],
         "name": "owner",
         "outputs": [{"name": "", "type": "address"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "_maxTxAmount",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "maxTxAmount",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "paused",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "tradingEnabled",
+        "outputs": [{"name": "", "type": "bool"}],
         "type": "function"
     }
 ]
@@ -299,6 +330,176 @@ class HoneypotDetector:
         except Exception as e:
             self.add_finding(f"Error checking liquidity: {str(e)}", "MEDIUM")
     
+    def check_source_verification(self):
+        """Check if contract source code is verified on BSCScan"""
+        try:
+            # Call BSCScan API to check if contract is verified
+            params = {
+                'module': 'contract',
+                'action': 'getsourcecode',
+                'address': self.contract_address,
+                'apikey': 'YourApiKeyToken'  # Free tier works without real key
+            }
+            
+            response = requests.get(BSCSCAN_API, params=params, timeout=10)
+            data = response.json()
+            
+            if data['status'] == '1' and data['result']:
+                source_code = data['result'][0].get('SourceCode', '')
+                contract_name = data['result'][0].get('ContractName', '')
+                
+                if source_code and source_code != '':
+                    self.add_finding(f"Contract verified on BSCScan: {contract_name}", "INFO")
+                else:
+                    self.add_finding("Contract NOT verified on BSCScan - high risk!", "HIGH")
+            else:
+                self.add_finding("Contract NOT verified on BSCScan - high risk!", "HIGH")
+        
+        except Exception as e:
+            self.add_finding(f"Could not verify source code: {str(e)}", "MEDIUM")
+    
+    def check_max_transaction_limit(self):
+        """Check for maximum transaction amount limits"""
+        try:
+            total_supply = self.contract.functions.totalSupply().call()
+            max_tx = None
+            
+            # Try different common max tx variable names
+            try:
+                max_tx = self.contract.functions._maxTxAmount().call()
+            except:
+                try:
+                    max_tx = self.contract.functions.maxTxAmount().call()
+                except:
+                    pass
+            
+            if max_tx is not None and max_tx > 0:
+                max_tx_percentage = (max_tx / total_supply) * 100
+                self.add_finding(f"Max transaction limit: {max_tx_percentage:.2f}% of supply", "INFO")
+                
+                if max_tx_percentage < 0.1:
+                    self.add_finding(f"Extremely low max TX (<0.1%) - likely HONEYPOT!", "CRITICAL")
+                    self.is_honeypot = True
+                elif max_tx_percentage < 0.5:
+                    self.add_finding(f"Very low max TX (<0.5%) - high risk!", "HIGH")
+                elif max_tx_percentage < 1:
+                    self.add_finding(f"Low max TX (<1%) - risky!", "MEDIUM")
+            else:
+                self.add_finding("No max transaction limit detected", "INFO")
+        
+        except Exception as e:
+            self.add_finding(f"Could not check max TX limit: {str(e)}", "INFO")
+    
+    def check_pause_mechanism(self):
+        """Check if contract has pause/lock mechanisms"""
+        try:
+            # Check for paused state
+            try:
+                is_paused = self.contract.functions.paused().call()
+                if is_paused:
+                    self.add_finding("Contract is PAUSED - trading disabled!", "CRITICAL")
+                    self.is_honeypot = True
+                else:
+                    self.add_finding("Contract not paused", "INFO")
+            except:
+                pass
+            
+            # Check for trading enabled flag
+            try:
+                trading_enabled = self.contract.functions.tradingEnabled().call()
+                if not trading_enabled:
+                    self.add_finding("Trading is DISABLED!", "CRITICAL")
+                    self.is_honeypot = True
+                else:
+                    self.add_finding("Trading enabled", "INFO")
+            except:
+                pass
+        
+        except Exception as e:
+            self.add_finding(f"Could not check pause mechanism: {str(e)}", "INFO")
+    
+    def check_tax_fees(self):
+        """Analyze buy and sell taxes by simulating transfers"""
+        try:
+            test_amount = self.w3.to_wei(0.01, 'ether')
+            path_buy = [Web3.to_checksum_address(WBNB), self.contract_address]
+            
+            # Get expected tokens from buy
+            try:
+                amounts_out = self.router.functions.getAmountsOut(test_amount, path_buy).call()
+                tokens_expected = amounts_out[1]
+                
+                if tokens_expected == 0:
+                    return
+                
+                # Now check sell and calculate effective tax
+                path_sell = [self.contract_address, Web3.to_checksum_address(WBNB)]
+                try:
+                    amounts_out_sell = self.router.functions.getAmountsOut(tokens_expected, path_sell).call()
+                    bnb_received = amounts_out_sell[1]
+                    
+                    # Calculate effective total tax (including slippage)
+                    effective_tax = ((test_amount - bnb_received) / test_amount) * 100
+                    
+                    # Rough estimate: assume half is slippage, half is tax (for low liquidity)
+                    # For better liquidity, most loss is from tax
+                    if effective_tax > 30:
+                        estimated_tax = max(0, effective_tax - 10)  # Remove ~10% slippage estimate
+                        self.add_finding(f"Estimated total buy+sell tax: ~{estimated_tax:.1f}%", "INFO")
+                        
+                        if estimated_tax > 50:
+                            self.add_finding("Extremely high tax (>50%) detected!", "CRITICAL")
+                        elif estimated_tax > 30:
+                            self.add_finding("Very high tax (>30%) - be cautious!", "HIGH")
+                        elif estimated_tax > 20:
+                            self.add_finding("High tax (>20%) detected", "MEDIUM")
+                
+                except:
+                    pass
+            
+            except:
+                pass
+        
+        except Exception as e:
+            self.add_finding(f"Could not analyze taxes: {str(e)}", "INFO")
+    
+    def check_gas_estimates(self):
+        """Compare gas estimates for buy vs sell to detect restrictions"""
+        try:
+            # Create test addresses
+            test_buyer = "0x0000000000000000000000000000000000000001"
+            test_seller = "0x0000000000000000000000000000000000000002"
+            
+            test_amount_tokens = self.w3.to_wei(1, 'ether')  # 1 token
+            
+            # Estimate gas for a transfer (simulates selling)
+            try:
+                gas_transfer = self.w3.eth.estimate_gas({
+                    'from': Web3.to_checksum_address(test_seller),
+                    'to': self.contract_address,
+                    'data': self.contract.encodeABI(fn_name='transfer', args=[
+                        Web3.to_checksum_address(test_buyer),
+                        test_amount_tokens
+                    ])
+                })
+                
+                self.add_finding(f"Estimated gas for transfer: {gas_transfer:,}", "INFO")
+                
+                # Normal BEP-20 transfer should be 50k-100k gas
+                if gas_transfer > 500000:
+                    self.add_finding("Extremely high gas for transfer (>500k) - suspicious!", "HIGH")
+                elif gas_transfer > 300000:
+                    self.add_finding("High gas for transfer (>300k) - unusual", "MEDIUM")
+            
+            except Exception as e:
+                # If gas estimation fails, it means the transaction would revert
+                error_msg = str(e).lower()
+                if 'revert' in error_msg or 'execution reverted' in error_msg:
+                    self.add_finding(f"Transfer gas estimation failed - may indicate sell restrictions!", "HIGH")
+        
+        except Exception as e:
+            self.add_finding(f"Could not estimate gas: {str(e)}", "INFO")
+    
     def analyze(self) -> Dict:
         """Run all detection checks"""
         print(f"\n{'='*60}")
@@ -309,10 +510,15 @@ class HoneypotDetector:
         
         # Run all checks
         token_info = self.check_basic_info()
+        self.check_source_verification()
         self.check_ownership()
         self.check_contract_code()
+        self.check_max_transaction_limit()
+        self.check_pause_mechanism()
         self.check_liquidity()
         self.check_transfer_restrictions()
+        self.check_tax_fees()
+        self.check_gas_estimates()
         self.simulate_buy_sell()
         
         # Determine final verdict
