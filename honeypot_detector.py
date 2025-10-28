@@ -148,14 +148,24 @@ class HoneypotDetector:
         self.findings = []
         self.is_honeypot = False
         self.risk_score = 0
+        self.red_flags = 0  # Count of serious issues
+        self.green_flags = 0  # Count of positive indicators
     
     def add_finding(self, finding: str, severity: str = "INFO"):
         """Add a finding to the report"""
         self.findings.append(f"[{severity}] {finding}")
-        if severity in ["HIGH", "CRITICAL"]:
+        if severity == "CRITICAL":
+            self.risk_score += 3
+            self.red_flags += 1
+        elif severity == "HIGH":
             self.risk_score += 2
+            self.red_flags += 1
         elif severity == "MEDIUM":
             self.risk_score += 1
+        elif severity == "GOOD":
+            # Positive indicators reduce risk slightly
+            self.risk_score = max(0, self.risk_score - 1)
+            self.green_flags += 1
     
     def check_basic_info(self) -> Dict:
         """Get basic token information"""
@@ -183,7 +193,11 @@ class HoneypotDetector:
         try:
             owner = self.contract.functions.owner().call()
             if owner == "0x0000000000000000000000000000000000000000":
-                self.add_finding("Ownership renounced (owner is zero address)", "INFO")
+                # Renounced ownership can be good OR bad
+                # Good: If contract is verified and audited
+                # Bad: If contract is unverified (can't check for backdoors)
+                self.add_finding("⚠️  Ownership renounced - owner cannot change contract", "INFO")
+                self.add_finding("⚠️  WARNING: If contract is unverified, this is HIGH RISK!", "INFO")
             else:
                 # Check owner's balance - this is the important part
                 owner_balance = self.contract.functions.balanceOf(owner).call()
@@ -191,17 +205,19 @@ class HoneypotDetector:
                 if total_supply > 0:
                     owner_percentage = (owner_balance / total_supply) * 100
                     if owner_percentage > 50:
-                        self.add_finding(f"Contract has owner: {owner}", "INFO")
-                        self.add_finding(f"⚠️  Owner holds {owner_percentage:.2f}% of supply - centralization risk!", "HIGH")
-                    elif owner_percentage > 20:
-                        self.add_finding(f"Contract has owner: {owner}", "INFO")
-                        self.add_finding(f"Owner holds {owner_percentage:.2f}% of supply", "MEDIUM")
-                    elif owner_percentage > 5:
-                        self.add_finding(f"Contract has owner holding {owner_percentage:.2f}% of supply", "INFO")
+                        self.add_finding(f"Owner: {owner}", "INFO")
+                        self.add_finding(f"🚨 Owner holds {owner_percentage:.2f}% of supply - EXTREME CENTRALIZATION!", "CRITICAL")
+                    elif owner_percentage > 30:
+                        self.add_finding(f"Owner: {owner}", "INFO")
+                        self.add_finding(f"⚠️  Owner holds {owner_percentage:.2f}% of supply - high centralization risk", "HIGH")
+                    elif owner_percentage > 10:
+                        self.add_finding(f"Owner holds {owner_percentage:.2f}% of supply - moderate risk", "MEDIUM")
+                    elif owner_percentage > 2:
+                        self.add_finding(f"Owner holds {owner_percentage:.2f}% of supply", "INFO")
                     else:
-                        self.add_finding(f"Contract has owner (holds {owner_percentage:.2f}% of supply)", "INFO")
+                        self.add_finding(f"✓ Owner holds minimal supply ({owner_percentage:.2f}%)", "GOOD")
                 else:
-                    self.add_finding(f"Contract has owner: {owner}", "INFO")
+                    self.add_finding(f"Owner: {owner}", "INFO")
         except Exception as e:
             self.add_finding(f"No owner() function found or error: {str(e)}", "INFO")
     
@@ -364,31 +380,49 @@ class HoneypotDetector:
             
             if pair_address == "0x0000000000000000000000000000000000000000":
                 self.add_finding("No liquidity pair found with BNB", "HIGH")
+                return
+            
+            self.add_finding(f"Liquidity pair exists: {pair_address}", "INFO")
+            
+            # Get actual reserves from the pair contract
+            pair_contract = self.w3.eth.contract(address=Web3.to_checksum_address(pair_address), abi=pair_abi)
+            reserves = pair_contract.functions.getReserves().call()
+            token0 = pair_contract.functions.token0().call()
+            token1 = pair_contract.functions.token1().call()
+            
+            # Determine which reserve is WBNB and which is the token
+            if token0.lower() == WBNB.lower():
+                bnb_reserve = reserves[0]
+                token_reserve = reserves[1]
             else:
-                self.add_finding(f"Liquidity pair exists: {pair_address}", "INFO")
-                
-                # Get actual reserves from the pair contract
-                pair_contract = self.w3.eth.contract(address=Web3.to_checksum_address(pair_address), abi=pair_abi)
-                reserves = pair_contract.functions.getReserves().call()
-                token0 = pair_contract.functions.token0().call()
-                token1 = pair_contract.functions.token1().call()
-                
-                # Determine which reserve is WBNB
-                if token0.lower() == WBNB.lower():
-                    bnb_reserve = reserves[0]
-                else:
-                    bnb_reserve = reserves[1]
-                
-                bnb_amount = self.w3.from_wei(bnb_reserve, 'ether')
-                self.add_finding(f"Pair BNB liquidity: {bnb_amount:.4f} BNB", "INFO")
-                
-                # Adjusted thresholds
-                if bnb_amount < 0.1:
-                    self.add_finding("Extremely low liquidity (<0.1 BNB) - very high risk!", "CRITICAL")
-                elif bnb_amount < 1:
-                    self.add_finding("Very low liquidity (<1 BNB) - high risk!", "HIGH")
-                elif bnb_amount < 5:
-                    self.add_finding("Low liquidity (<5 BNB) - proceed with caution", "MEDIUM")
+                bnb_reserve = reserves[1]
+                token_reserve = reserves[0]
+            
+            bnb_amount = self.w3.from_wei(bnb_reserve, 'ether')
+            
+            # Calculate market cap (approximate, based on liquidity)
+            # In a typical LP, liquidity is split 50/50, so market cap ≈ 2 * BNB liquidity
+            estimated_mcap_bnb = bnb_amount * 2
+            
+            self.add_finding(f"Liquidity: {bnb_amount:.4f} BNB (~${bnb_amount * 600:.0f} USD)", "INFO")
+            self.add_finding(f"Est. Market Cap: ~{estimated_mcap_bnb:.1f} BNB (~${estimated_mcap_bnb * 600:.0f} USD)", "INFO")
+            
+            # Risk assessment based on liquidity depth
+            # Critical thresholds considering rug pull risk
+            if bnb_amount < 0.1:
+                self.add_finding("💀 Extremely low liquidity (<0.1 BNB / <$60) - EXTREME RUG RISK!", "CRITICAL")
+            elif bnb_amount < 1:
+                self.add_finding("⚠️  Very low liquidity (<1 BNB / <$600) - high rug pull risk!", "HIGH")
+            elif bnb_amount < 10:
+                self.add_finding("⚠️  Low liquidity (<10 BNB / <$6k) - significant risk", "HIGH")
+            elif bnb_amount < 50:
+                self.add_finding("⚠️  Below average liquidity (<50 BNB / <$30k) - risky", "MEDIUM")
+            elif bnb_amount < 100:
+                self.add_finding("Moderate liquidity (50-100 BNB) - acceptable for small caps", "INFO")
+            elif bnb_amount < 500:
+                self.add_finding("✓ Good liquidity (100-500 BNB)", "GOOD")
+            else:
+                self.add_finding("✓ Excellent liquidity (>500 BNB)", "GOOD")
         
         except Exception as e:
             self.add_finding(f"Error checking liquidity: {str(e)}", "MEDIUM")
@@ -412,16 +446,14 @@ class HoneypotDetector:
                 contract_name = data['result'][0].get('ContractName', '')
                 
                 if source_code and source_code != '':
-                    self.add_finding(f"✓ Contract verified on BSCScan: {contract_name}", "INFO")
+                    self.add_finding(f"✓ Contract verified on BSCScan: {contract_name}", "GOOD")
                 else:
-                    # Only flag as MEDIUM if truly unverified, not INFO to avoid penalizing
-                    self.add_finding("Contract source not verified on BSCScan", "INFO")
+                    # Unverified contract is a red flag, especially with renounced ownership
+                    self.add_finding("⚠️  Contract NOT verified on BSCScan - cannot audit code!", "MEDIUM")
             else:
-                # API might have failed, don't penalize
                 self.add_finding("Could not check source verification (API issue)", "INFO")
         
         except Exception as e:
-            # Network issue, don't penalize the token
             self.add_finding(f"Source verification check failed: {str(e)}", "INFO")
     
     def check_max_transaction_limit(self):
@@ -592,23 +624,34 @@ class HoneypotDetector:
         # Cap risk score at 10
         self.risk_score = min(self.risk_score, 10)
         
-        # Determine final verdict
-        # Only flag as honeypot if explicitly detected OR very high risk score
-        if self.is_honeypot or self.risk_score >= 8:
+        # Determine final verdict based on multiple factors
+        # Honeypot if explicitly detected OR multiple critical red flags
+        if self.is_honeypot:
             verdict = "🚨 HONEYPOT DETECTED"
             verdict_color = "CRITICAL"
+        elif self.red_flags >= 2:  # Multiple serious issues
+            verdict = "🚨 VERY HIGH RISK - Likely scam or honeypot"
+            verdict_color = "CRITICAL"
+        elif self.risk_score >= 7:
+            verdict = "⛔ EXTREME RISK - Do NOT invest"
+            verdict_color = "CRITICAL"
         elif self.risk_score >= 5:
-            verdict = "⚠️  HIGH RISK - Proceed with extreme caution"
+            verdict = "⚠️  HIGH RISK - Dangerous, proceed with extreme caution"
             verdict_color = "HIGH"
         elif self.risk_score >= 3:
-            verdict = "⚡ MEDIUM RISK - Be cautious"
+            verdict = "⚠️  MEDIUM RISK - Significant concerns, DYOR carefully"
             verdict_color = "MEDIUM"
         elif self.risk_score >= 1:
-            verdict = "⚠️  LOW-MEDIUM RISK - Do your research"
+            verdict = "⚡ LOW-MEDIUM RISK - Some concerns, verify before investing"
             verdict_color = "LOW"
         else:
-            verdict = "✅ APPEARS SAFE - Low risk detected"
-            verdict_color = "INFO"
+            # Only mark as safe if we have some green flags
+            if self.green_flags >= 2:
+                verdict = "✅ LOW RISK - Appears relatively safe"
+                verdict_color = "INFO"
+            else:
+                verdict = "⚡ LOW RISK - No major red flags detected"
+                verdict_color = "LOW"
         
         return {
             "contract_address": self.contract_address,
