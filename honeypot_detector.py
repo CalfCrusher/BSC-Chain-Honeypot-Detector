@@ -521,6 +521,9 @@ class HoneypotDetector:
         self.check_gas_estimates()
         self.simulate_buy_sell()
         
+        # Cap risk score at 10
+        self.risk_score = min(self.risk_score, 10)
+        
         # Determine final verdict
         if self.is_honeypot or self.risk_score >= 4:
             verdict = "🚨 HONEYPOT DETECTED"
