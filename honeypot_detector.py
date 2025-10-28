@@ -294,10 +294,34 @@ class HoneypotDetector:
                 self.add_finding("Contract has no code (not deployed or proxy)", "CRITICAL")
                 return
             
-            # Avoid naive opcode scanning; just sanity-check presence of bytecode and size
+            # Basic sanity check
             if len(code_hex) < 100:
                 self.add_finding("Contract bytecode unusually small - may be proxy or non-standard", "MEDIUM")
-            
+
+            # Lightweight opcode scan for high-signal patterns
+            # Implement a simple disassembler that skips PUSH data and records opcodes
+            b = bytes.fromhex(code_hex[2:] if code_hex.startswith('0x') else code_hex)
+            i = 0
+            delegatecall_count = 0
+            selfdestruct_count = 0
+            while i < len(b):
+                op = b[i]
+                i += 1
+                # PUSH1..PUSH32: 0x60..0x7f
+                if 0x60 <= op <= 0x7f:
+                    push_len = op - 0x5f
+                    i += push_len
+                    continue
+                if op == 0xf4:  # DELEGATECALL
+                    delegatecall_count += 1
+                elif op == 0xff:  # SELFDESTRUCT
+                    selfdestruct_count += 1
+
+            if delegatecall_count > 0:
+                self.add_finding(f"DELEGATECALL found in bytecode ({delegatecall_count}x) - typical in proxies; review implementation", "MEDIUM")
+            if selfdestruct_count > 0:
+                self.add_finding(f"SELFDESTRUCT found in bytecode ({selfdestruct_count}x) - dangerous if reachable", "HIGH")
+
             self.add_finding("Bytecode analysis: Basic checks passed", "INFO")
             
         except Exception as e:
@@ -1048,13 +1072,17 @@ Example usage:
         else:
             detector.print_report(analysis)
         
-        # Exit with appropriate code
-        if analysis["verdict_color"] == "CRITICAL":
-            sys.exit(2)  # Honeypot detected
-        elif analysis["verdict_color"] == "HIGH":
-            sys.exit(1)  # High risk
+        # Exit with appropriate code (align with README)
+        # 2 only when honeypot explicitly detected
+        verdict_text = analysis.get("verdict", "")
+        is_honeypot = ("HONEYPOT" in verdict_text.upper())
+        if is_honeypot:
+            sys.exit(2)
+        elif analysis["verdict_color"] in ["CRITICAL", "HIGH"]:
+            # Critical but not explicit honeypot => exit 1 (high risk)
+            sys.exit(1)
         else:
-            sys.exit(0)  # Safe or medium risk
+            sys.exit(0)
     
     except Exception as e:
         print(f"\n❌ Error: {str(e)}\n")
