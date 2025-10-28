@@ -2,6 +2,8 @@
 
 A Python script that analyzes BEP-20 tokens on Binance Smart Chain (BSC) to detect honeypot characteristics using multiple detection techniques.
 
+Now with colorized, readable output powered by Rich, optional external honeypot simulation, JSON output, and cached BNB/USD pricing.
+
 ## Features
 
 The detector performs the following checks:
@@ -17,11 +19,21 @@ The detector performs the following checks:
 9. **Tax/Fee Analysis** - Estimates buy and sell taxes from slippage analysis
 10. **Gas Estimation** - Compares gas costs to detect unusual behavior
 11. **Buy/Sell Simulation** - Simulates trades to detect selling restrictions and calculate slippage
+12. **External Honeypot Check (optional)** - Uses honeypot.is public API for an additional simulation signal
+13. **JSON Output** - Machine-readable output for automation with `--json`
+14. **Price Caching** - BNB/USD fetched and cached (fallback to env or default)
 
 ## Installation
 
 1. Install Python dependencies:
 ```bash
+pip install -r requirements.txt
+```
+
+Tip: Use a virtual environment:
+```bash
+python -m venv env
+source env/bin/activate  # macOS/Linux
 pip install -r requirements.txt
 ```
 
@@ -31,6 +43,12 @@ Run the script with a single command-line argument:
 
 ```bash
 python honeypot_detector.py --address <contract_address>
+
+# Optional flags
+python honeypot_detector.py --address <contract_address> --no-external    # skip external honeypot API
+python honeypot_detector.py --address <contract_address> --external-only  # run ONLY external check (fast)
+python honeypot_detector.py --address <contract_address> --json           # JSON output
+python honeypot_detector.py --address <contract_address> --no-verify      # skip explorer source verification
 ```
 
 ### Example
@@ -50,6 +68,8 @@ The script will:
   - ⚡ MEDIUM RISK - Be cautious
   - ⚠️  HIGH RISK - Proceed with extreme caution
   - 🚨 HONEYPOT DETECTED - Do not invest!
+
+Colorized output is enabled automatically when the Rich library is available (installed via requirements.txt). If Rich isn't installed, the script falls back to plain text. When `--json` is provided, the script suppresses tables and prints a JSON document.
 
 ## Exit Codes
 
@@ -123,6 +143,11 @@ The script will:
 - Active internet connection
 - BSC RPC endpoint access
 
+Optional environment variables:
+- `ETHERSCAN_API`: Preferred key for Etherscan API v2 (multi-chain, including BSC). Create a free key on etherscan.io and it works for BscScan via v2.
+- `BSCSCAN_API_KEY`: Legacy fallback for BscScan v1 endpoint if v2 is unavailable.
+- `BNB_PRICE_USD`: Override the auto-fetched BNB price (used for USD estimates). If not set, the script fetches from Binance/Coingecko and caches it for ~10 minutes.
+
 ## Disclaimer
 
 ⚠️ This tool is for educational and research purposes only. It is NOT financial advice. Always conduct your own research (DYOR) before investing in any cryptocurrency or token. The tool may produce false positives or false negatives. Use at your own risk.
@@ -133,6 +158,13 @@ The script will:
 - **Chain ID**: 56
 - **RPC**: https://bsc-dataseed1.binance.org/
 - **DEX**: PancakeSwap V2
+
+External services (best-effort, optional):
+- Etherscan API v2 (with `ETHERSCAN_API`) for source verification
+- Legacy BscScan API (with `BSCSCAN_API_KEY`) as a fallback
+- Sourcify repository (no key) as an additional fallback for verified source
+- honeypot.is public API for additional honeypot simulation signal
+- Binance/Coingecko public price APIs for BNB/USD price
 
 ## License
 
